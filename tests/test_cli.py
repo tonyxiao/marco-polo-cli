@@ -146,6 +146,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("conv-1", conversations.stdout)
         self.assertIn("Bethel Island Team", conversations.stdout)
 
+        participants = run_cli("participants", "--sync-file", sync, "--conversation", "conv-1")
+        self.assertIn("conv-1", participants.stdout)
+        self.assertIn("Example Person", participants.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

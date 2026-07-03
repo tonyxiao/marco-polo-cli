@@ -3,7 +3,7 @@
 
 The normal credential source is a local token file such as
 ``.marco-polo-token``. HAR parsing exists only as a migration/import helper for
-captured traffic while the login API is being reverse engineered.
+captured traffic if the private login API changes.
 Do not commit token files, HAR files, or token values.
 """
 

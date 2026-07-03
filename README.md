@@ -119,6 +119,14 @@ marco-polo actionables VIDEO_ID \
   --sync-file private/sync.json
 ```
 
+List participants:
+
+```bash
+marco-polo participants \
+  --sync-file private/sync.json \
+  --conversation CONVERSATION_ID
+```
+
 ## API Notes
 
 The reverse-engineered API contract lives in [docs/openapi.yaml](docs/openapi.yaml). Keep it updated whenever a new app endpoint is captured or confirmed.
@@ -149,3 +157,11 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 Tests generate temporary fake auth captures at runtime. No committed test fixture contains real tokens, phone numbers, transcripts, or Marco Polo media.
+
+Run the live integration suite only with an ignored token file:
+
+```bash
+RUN_MARCO_POLO_INTEGRATION=1 \
+MARCO_POLO_TOKEN_FILE=.marco-polo-token \
+PYTHONPATH=src python3 -m unittest tests.test_integration_live -v
+```

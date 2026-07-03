@@ -247,6 +247,18 @@ def convos(args):
         print(f"{conv.get('conversation_id')}\t{title}")
 
 
+def participants(args):
+    data = json.loads(args.sync_file.read_text())
+    for conv in iter_conversations(data):
+        if args.conversation and conv.get("conversation_id") != args.conversation:
+            continue
+        members = conv.get("members", [])
+        for member in members:
+            name = " ".join(filter(None, [member.get("first_name"), member.get("last_name")])).strip()
+            user_id = member.get("user_id") or member.get("external_id") or ""
+            print(f"{conv.get('conversation_id')}\t{user_id}\t{name}")
+
+
 def videos(args):
     data = json.loads(args.sync_file.read_text())
     for rec in iter_video_records(data):
@@ -581,6 +593,11 @@ def main():
     p = sub.add_parser("convos", aliases=["conversations"], help="list conversations from sync metadata")
     p.add_argument("--sync-file", type=Path, default=SYNC)
     p.set_defaults(func=convos)
+
+    p = sub.add_parser("participants", help="list conversation participants from sync metadata")
+    p.add_argument("--sync-file", type=Path, default=SYNC)
+    p.add_argument("--conversation")
+    p.set_defaults(func=participants)
 
     p = sub.add_parser("videos", help="list videos from sync metadata")
     p.add_argument("--sync-file", type=Path, default=SYNC)
