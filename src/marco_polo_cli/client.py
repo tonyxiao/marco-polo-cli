@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Small API-only Marco Polo client wrapper.
 
-The client intentionally keeps authentication simple: pass a HAR file captured
-from a successful Marco Polo request and the client reuses its auth headers.
-Do not commit HAR files or token values.
+The normal credential source is a local token file such as
+``.marco-polo-token``. HAR parsing exists only as a migration/import helper for
+captured traffic while the login API is being reverse engineered.
+Do not commit token files, HAR files, or token values.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,9 +23,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+DEFAULT_TOKEN_FILE = Path(os.environ.get("MARCO_POLO_TOKEN_FILE", ".marco-polo-token"))
 DEFAULT_SYNC = Path(os.environ.get("MARCO_POLO_SYNC_FILE", "private/sync.json"))
-DEFAULT_AUTH_HAR = Path(os.environ.get("MARCO_POLO_AUTH_HAR", "private/sync-auth.har"))
-DEFAULT_VIDEO_AUTH_HAR = Path(os.environ.get("MARCO_POLO_VIDEO_AUTH_HAR", "private/video-auth.har"))
 DEFAULT_CONVERTER = Path(__file__).with_name("svp_to_mp4.py")
 DEFAULT_CONVERTER_MODULE = "marco_polo_cli.svp_to_mp4"
 
@@ -74,6 +75,46 @@ def load_auth_from_har(path: Path) -> AuthHeaders:
     raise ValueError(f"no Authorization header found in {path}")
 
 
+def _auth_to_json(auth: AuthHeaders) -> dict[str, str]:
+    data = {"authorization": auth.authorization}
+    if auth.x_auth_token:
+        data["x_auth_token"] = auth.x_auth_token
+    return data
+
+
+def _auth_from_json(data: dict[str, Any]) -> AuthHeaders:
+    authorization = data.get("authorization")
+    if not authorization:
+        raise ValueError("token entry is missing authorization")
+    return AuthHeaders(authorization, data.get("x_auth_token"))
+
+
+def load_token_file(path: Path, profile: str = "sync") -> AuthHeaders:
+    data = json.loads(path.read_text())
+    if "authorization" in data:
+        return _auth_from_json(data)
+    tokens = data.get("tokens") or {}
+    entry = tokens.get(profile)
+    if entry is None and profile == "video":
+        entry = tokens.get("sync")
+    if not entry:
+        raise ValueError(f"token file {path} has no {profile!r} token")
+    return _auth_from_json(entry)
+
+
+def save_token_file(path: Path, profile: str, auth: AuthHeaders) -> None:
+    if path.exists():
+        data = json.loads(path.read_text())
+    else:
+        data = {"version": 1, "tokens": {}}
+    data.setdefault("version", 1)
+    data.setdefault("tokens", {})
+    data["tokens"][profile] = _auth_to_json(auth)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
 def _request_json(url: str, auth: AuthHeaders) -> Any:
     req = urllib.request.Request(url)
     req.add_header("Authorization", auth.authorization)
@@ -121,13 +162,11 @@ class MarcoPoloClient:
     def __init__(
         self,
         sync_file: Path = DEFAULT_SYNC,
-        auth_har: Path | None = DEFAULT_AUTH_HAR,
-        video_auth_har: Path | None = DEFAULT_VIDEO_AUTH_HAR,
+        token_file: Path = DEFAULT_TOKEN_FILE,
         converter: Path = DEFAULT_CONVERTER,
     ) -> None:
         self.sync_file = Path(sync_file)
-        self.auth_har = Path(auth_har) if auth_har else None
-        self.video_auth_har = Path(video_auth_har) if video_auth_har else None
+        self.token_file = Path(token_file)
         self.converter = Path(converter)
         self._sync_data: Any | None = None
         self._auth: AuthHeaders | None = None
@@ -136,18 +175,13 @@ class MarcoPoloClient:
     @property
     def auth(self) -> AuthHeaders:
         if self._auth is None:
-            if not self.auth_har:
-                raise ValueError("auth_har is required for live API calls")
-            self._auth = load_auth_from_har(self.auth_har)
+            self._auth = load_token_file(self.token_file, "sync")
         return self._auth
 
     @property
     def video_auth(self) -> AuthHeaders:
         if self._video_auth is None:
-            if self.video_auth_har and self.video_auth_har.exists():
-                self._video_auth = load_auth_from_har(self.video_auth_har)
-            else:
-                self._video_auth = self.auth
+            self._video_auth = load_token_file(self.token_file, "video")
         return self._video_auth
 
     def sync(self, out: Path | None = None) -> Any:

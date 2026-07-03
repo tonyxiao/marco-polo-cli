@@ -1,0 +1,296 @@
+openapi: 3.1.0
+info:
+  title: Marco Polo Reverse-Engineered App API
+  version: 0.1.0
+  description: >
+    Unofficial API notes for the Marco Polo mobile app endpoints used by this
+    CLI. This spec documents observed behavior only and should be updated as
+    endpoints are confirmed from live app traffic.
+servers:
+  - url: https://marcopolo.me
+    description: Core API host
+  - url: https://video-2-redirect.marcopolo.me
+    description: Video download host observed in app traffic
+security:
+  - bearerAuth: []
+paths:
+  /api/v4/conversations/sync:
+    get:
+      operationId: syncConversations
+      summary: Sync conversations, messages, video metadata, and transcripts
+      description: >
+        Returns conversation data used by the app. Observed response payloads
+        include conversations, message entries, video IDs, read tokens,
+        durations, and text transcripts.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/UserAgent"
+        - $ref: "#/components/parameters/XAuthToken"
+      responses:
+        "200":
+          description: Sync payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResponse"
+        "401":
+          description: Authorization header is missing, expired, or rejected
+  /api/v4/videos/{video_id}/mp4/video:
+    get:
+      operationId: downloadMp4VideoPayload
+      summary: Download the raw Marco Polo video payload for one video
+      description: >
+        Returns a Marco Polo-specific media payload. The CLI converts this body
+        to a standard MP4. A per-video X-Read-Token from the sync payload is
+        required.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/UserAgent"
+        - $ref: "#/components/parameters/XAuthToken"
+        - name: X-Read-Token
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+            default: bytes=0-
+        - name: X-Wait
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "true"
+        - name: X-Wait-Seconds
+          in: header
+          required: false
+          schema:
+            type: string
+            default: "20"
+      responses:
+        "200":
+          description: Raw Marco Polo video body
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "206":
+          description: Partial raw Marco Polo video body
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Authorization header is missing, expired, or rejected
+        "403":
+          description: Read token is missing or rejected
+  /api/v4/auth/send-phone-code:
+    post:
+      operationId: requestLoginCode
+      summary: Request phone verification code
+      description: >
+        Requests an SMS or WhatsApp verification code for a phone number.
+      x-reverse-engineering-status: observed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendPhoneCodeRequest"
+      responses:
+        "200":
+          description: Code request accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendPhoneCodeResponse"
+  /api/v4/auth/verify-phone-code:
+    post:
+      operationId: verifyLoginCode
+      summary: Verify phone code and mint API token
+      description: >
+        Verifies a phone code and returns an API token. Observed app traffic
+        maps `api_token` to the bearer Authorization header. When present,
+        `video_auth_token` maps to X-Auth-Token for video downloads.
+      x-reverse-engineering-status: observed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyPhoneCodeRequest"
+      responses:
+        "200":
+          description: Login/token payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyPhoneCodeResponse"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    UserAgent:
+      name: User-Agent
+      in: header
+      required: false
+      schema:
+        type: string
+        default: okhttp/5.3.2
+    XAuthToken:
+      name: X-Auth-Token
+      in: header
+      required: false
+      schema:
+        type: string
+  schemas:
+    SyncResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+    Conversation:
+      type: object
+      additionalProperties: true
+      properties:
+        conversation_id:
+          type: string
+        title:
+          type: string
+        members:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        messages:
+          type: object
+          additionalProperties: true
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: "#/components/schemas/Message"
+    Message:
+      type: object
+      additionalProperties: true
+      properties:
+        message_id:
+          type: string
+        video:
+          $ref: "#/components/schemas/Video"
+    Video:
+      type: object
+      additionalProperties: true
+      properties:
+        video_id:
+          type: string
+        duration_ms:
+          type: integer
+        read_token:
+          type: string
+        text_transcript:
+          type: string
+    SendPhoneCodeRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        country_code:
+          type: string
+          examples: ["US"]
+        delivery:
+          type: string
+          examples: ["sms"]
+        delivery_method:
+          type: string
+          examples: ["sms"]
+        existing_user_only:
+          type: boolean
+        phone:
+          type: string
+          description: National phone number digits, without country prefix for US captures.
+      required:
+        - country_code
+        - delivery
+        - delivery_method
+        - existing_user_only
+        - phone
+    SendPhoneCodeResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        code_length:
+          type: integer
+        prefix:
+          type: string
+        whatsapp_required:
+          type: boolean
+    VerifyPhoneCodeRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        collision_decision_input:
+          type: boolean
+        country_code:
+          type: string
+          examples: ["US"]
+        feature_flags:
+          type: array
+          items:
+            type: string
+        phone:
+          type: string
+        supports_email_verification:
+          type: boolean
+        verification_code:
+          type: string
+      required:
+        - collision_decision_input
+        - country_code
+        - feature_flags
+        - phone
+        - supports_email_verification
+        - verification_code
+    VerifyPhoneCodeResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        api_token:
+          type: string
+          description: Use as `Authorization: Bearer {api_token}`.
+        video_auth_token:
+          type: string
+          description: Use as `X-Auth-Token` when present.
+        device_id:
+          type: string
+        expiration_time:
+          type: string
+        awaiting_email_confirmation:
+          type: boolean
+        is_registered:
+          type: boolean

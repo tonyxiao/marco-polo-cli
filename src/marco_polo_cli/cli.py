@@ -11,38 +11,30 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from marco_polo_cli.client import MarcoPoloClient
+from marco_polo_cli.client import (
+    DEFAULT_TOKEN_FILE,
+    MarcoPoloClient,
+    load_auth_from_har,
+    load_token_file,
+    save_token_file,
+)
 
 PRIVATE_DIR = Path("private")
 EXPORTS_DIR = Path("exports")
-HAR = Path(os.environ.get("MARCO_POLO_AUTH_HAR", PRIVATE_DIR / "sync-auth.har"))
-VIDEO_HAR = Path(os.environ.get("MARCO_POLO_VIDEO_AUTH_HAR", PRIVATE_DIR / "video-auth.har"))
+TOKEN_FILE = DEFAULT_TOKEN_FILE
 SYNC = Path(os.environ.get("MARCO_POLO_SYNC_FILE", PRIVATE_DIR / "sync.json"))
 CONVERTER_MODULE = "marco_polo_cli.svp_to_mp4"
+DEFAULT_COUNTRY_CODE = "US"
+DEFAULT_FEATURE_FLAGS = []
 
 
-def load_auth(har_path=None):
-    har_path = har_path or HAR
-    har = json.loads(har_path.read_text())
-    fallback = None
-    for entry in har.get("log", {}).get("entries", []):
-        req = entry.get("request", {})
-        headers = {h["name"].lower(): h["value"] for h in req.get("headers", [])}
-        auth = headers.get("authorization")
-        xauth = headers.get("x-auth-token")
-        if not auth:
-            continue
-        if "/api/v4/conversations/sync" in req.get("url", ""):
-            return auth, xauth
-        if fallback is None:
-            fallback = (auth, xauth)
-    if fallback:
-        return fallback
-    raise SystemExit(f"no auth headers found in {har_path}")
+def load_auth(token_file=None, profile="sync"):
+    auth = load_token_file(token_file or TOKEN_FILE, profile)
+    return auth.authorization, auth.x_auth_token
 
 
-def request_json(url, auth_har=None):
-    auth, xauth = load_auth(auth_har)
+def request_json(url, token_file=None, profile="sync"):
+    auth, xauth = load_auth(token_file, profile)
     req = urllib.request.Request(url)
     req.add_header("Authorization", auth)
     if xauth:
@@ -50,6 +42,23 @@ def request_json(url, auth_har=None):
     req.add_header("User-Agent", "okhttp/5.3.2")
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)
+
+
+def post_json(url, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "okhttp/5.3.2")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)
+
+
+def normalize_phone(phone):
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits
 
 
 def print_status(label, ok, detail=""):
@@ -66,46 +75,87 @@ def init_workspace(args):
     if not readme.exists() or args.force:
         readme.write_text(
             "# Marco Polo private files\n\n"
-            "Put captured HAR files and sync metadata here. These files can contain live auth tokens "
-            "or private message metadata and should stay out of Git.\n\n"
+            "Put sync metadata and temporary capture artifacts here. These files can contain "
+            "private message metadata and should stay out of Git.\n\n"
             "Recommended names:\n\n"
-            "- `sync-auth.har` from `/api/v4/conversations/sync`\n"
-            "- `video-auth.har` from `/mp4/video`\n"
             "- `sync.json` from `marco-polo sync`\n"
+            "- temporary HAR captures only long enough to run `marco-polo auth import-har`\n"
         )
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"initialized {root}/ and {EXPORTS_DIR}/")
-    print("next: capture sync/video HARs, then run `marco-polo doctor`")
+    print(f"initialized {root}/, {EXPORTS_DIR}/, and token path {TOKEN_FILE}")
+    print("next: create a token with `marco-polo auth login` or `marco-polo auth import-har`")
 
 
 def doctor(args):
     print_status("python", True, sys.version.split()[0])
     print_status("ffmpeg", shutil.which("ffmpeg") is not None, shutil.which("ffmpeg") or "install for export/verify")
     print_status("ffprobe", shutil.which("ffprobe") is not None, shutil.which("ffprobe") or "install for --verify")
-    print_status("sync auth HAR", args.auth_har.exists(), str(args.auth_har))
-    print_status("video auth HAR", args.video_auth_har.exists(), str(args.video_auth_har))
+    print_status("token file", args.token_file.exists(), str(args.token_file))
     print_status("sync metadata", args.sync_file.exists(), str(args.sync_file))
-    if args.auth_har.exists():
-        try:
-            auth, xauth = load_auth(args.auth_har)
-            print(f"sync auth headers: Authorization={'present' if auth else 'missing'} X-Auth-Token={'present' if xauth else 'missing'}")
-        except Exception as exc:
-            print(f"sync auth headers: error - {type(exc).__name__}: {exc}")
-    if args.video_auth_har.exists():
-        try:
-            auth, xauth = load_auth(args.video_auth_har)
-            print(f"video auth headers: Authorization={'present' if auth else 'missing'} X-Auth-Token={'present' if xauth else 'missing'}")
-        except Exception as exc:
-            print(f"video auth headers: error - {type(exc).__name__}: {exc}")
+    if args.token_file.exists():
+        for profile in ("sync", "video"):
+            try:
+                auth, xauth = load_auth(args.token_file, profile)
+                print(f"{profile} token: Authorization={'present' if auth else 'missing'} X-Auth-Token={'present' if xauth else 'missing'}")
+            except Exception as exc:
+                print(f"{profile} token: error - {type(exc).__name__}: {exc}")
+
+
+def auth_import_har(args):
+    auth = load_auth_from_har(args.har)
+    save_token_file(args.token_file, args.profile, auth)
+    print(f"wrote {args.profile} token to {args.token_file}")
+
+
+def auth_login(args):
+    phone = normalize_phone(args.phone)
+    if not args.code:
+        data = post_json(
+            "https://marcopolo.me/api/v4/auth/send-phone-code",
+            {
+                "country_code": args.country_code,
+                "delivery": args.delivery,
+                "delivery_method": args.delivery,
+                "existing_user_only": args.existing_user_only,
+                "phone": phone,
+            },
+        )
+        code_length = data.get("code_length")
+        detail = f" ({code_length} digits)" if code_length else ""
+        print(f"verification code requested{detail}")
+        return
+
+    data = post_json(
+        "https://marcopolo.me/api/v4/auth/verify-phone-code",
+        {
+            "collision_decision_input": True,
+            "country_code": args.country_code,
+            "feature_flags": DEFAULT_FEATURE_FLAGS,
+            "phone": phone,
+            "supports_email_verification": True,
+            "verification_code": args.code,
+        },
+    )
+    api_token = data.get("api_token")
+    if not api_token:
+        raise SystemExit("verification succeeded but response did not contain api_token")
+    auth_header = f"Bearer {api_token}"
+    xauth = data.get("video_auth_token")
+    from marco_polo_cli.client import AuthHeaders
+
+    save_token_file(args.token_file, "sync", AuthHeaders(auth_header, xauth))
+    save_token_file(args.token_file, "video", AuthHeaders(auth_header, xauth))
+    suffix = " with video auth" if xauth else ""
+    print(f"wrote sync and video tokens to {args.token_file}{suffix}")
 
 
 def auth_check(args):
-    auth, xauth = load_auth(args.auth_har)
-    print(f"auth header: {'present' if auth else 'missing'}")
-    print(f"x-auth-token header: {'present' if xauth else 'missing'}")
+    auth, xauth = load_auth(args.token_file, args.profile)
+    print(f"{args.profile} auth header: {'present' if auth else 'missing'}")
+    print(f"{args.profile} x-auth-token header: {'present' if xauth else 'missing'}")
     if args.live:
         try:
-            data = request_json("https://marcopolo.me/api/v4/conversations/sync", args.auth_har)
+            data = request_json("https://marcopolo.me/api/v4/conversations/sync", args.token_file, "sync")
             count = sum(1 for _ in iter_video_records(data))
             print(f"live sync: ok ({count} videos visible)")
         except urllib.error.HTTPError as exc:
@@ -113,14 +163,14 @@ def auth_check(args):
     if args.video_id:
         _, _, video = find_video(args.sync_file, args.video_id)
         try:
-            check_video_download_auth(args.video_id, video, args.auth_har)
+            check_video_download_auth(args.video_id, video, args.token_file)
             print("video download: ok")
         except urllib.error.HTTPError as exc:
             print(f"video download: HTTP {exc.code} {exc.reason}")
 
 
-def check_video_download_auth(video_id, video, auth_har=None):
-    auth, xauth = load_auth(auth_har)
+def check_video_download_auth(video_id, video, token_file=None):
+    auth, xauth = load_auth(token_file, "video")
     url = f"https://video-2-redirect.marcopolo.me/api/v4/videos/{video_id}/mp4/video"
     req = urllib.request.Request(url)
     req.add_header("Authorization", auth)
@@ -136,7 +186,7 @@ def check_video_download_auth(video_id, video, auth_har=None):
 
 
 def sync(args):
-    data = request_json("https://marcopolo.me/api/v4/conversations/sync", args.auth_har)
+    data = request_json("https://marcopolo.me/api/v4/conversations/sync", args.token_file, "sync")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(data, indent=2, ensure_ascii=False))
     print(f"wrote {args.out}")
@@ -221,12 +271,12 @@ def find_video(sync_file, video_id):
 
 def download_raw(args):
     _, _, video = find_video(args.sync_file, args.video_id)
-    download_video_raw(args.video_id, video, args.out, args.auth_har)
+    download_video_raw(args.video_id, video, args.out, args.token_file)
 
 
-def download_video_raw(video_id, video, out, auth_har=None):
+def download_video_raw(video_id, video, out, token_file=None):
     out.parent.mkdir(parents=True, exist_ok=True)
-    auth, xauth = load_auth(auth_har)
+    auth, xauth = load_auth(token_file, "video")
     url = f"https://video-2-redirect.marcopolo.me/api/v4/videos/{video_id}/mp4/video"
     req = urllib.request.Request(url)
     req.add_header("Authorization", auth)
@@ -259,7 +309,7 @@ def export_standard_mp4(args):
         video,
         args.out,
         sync_file=args.sync_file,
-        auth_har=args.auth_har,
+        token_file=args.token_file,
         raw=args.raw,
         raw_dir=args.raw_dir,
         info=args.info,
@@ -268,7 +318,7 @@ def export_standard_mp4(args):
     )
 
 
-def export_one(video_id, video, out, sync_file=SYNC, auth_har=VIDEO_HAR, raw=None, raw_dir=None, info=None, verify=False, keep_raw=False):
+def export_one(video_id, video, out, sync_file=SYNC, token_file=TOKEN_FILE, raw=None, raw_dir=None, info=None, verify=False, keep_raw=False):
     duration_ms = video.get("duration_ms")
     raw_path = raw
     temp_dir = None
@@ -281,7 +331,7 @@ def export_one(video_id, video, out, sync_file=SYNC, auth_har=VIDEO_HAR, raw=Non
         else:
             temp_dir = tempfile.TemporaryDirectory(prefix="marcopolo-raw-")
             raw_path = Path(temp_dir.name) / f"{video_id}.mp4"
-        download_video_raw(video_id, video, raw_path, auth_har)
+        download_video_raw(video_id, video, raw_path, token_file)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-m", CONVERTER_MODULE, str(raw_path), str(out), "--with-audio"]
@@ -357,7 +407,7 @@ def export_batch(args):
                     video,
                     out,
                     sync_file=args.sync_file,
-                    auth_har=args.auth_har,
+                    token_file=args.token_file,
                     raw_dir=raw_dir,
                     info=info,
                     verify=args.verify,
@@ -427,7 +477,7 @@ def verify_outputs(args):
 
 
 def print_transcript(args):
-    client = MarcoPoloClient(sync_file=args.sync_file, auth_har=args.auth_har)
+    client = MarcoPoloClient(sync_file=args.sync_file, token_file=args.token_file)
     record = client.find_video(args.video_id)
     data = {
         "video_id": record.video_id,
@@ -447,7 +497,7 @@ def print_transcript(args):
 
 
 def print_actionables(args):
-    client = MarcoPoloClient(sync_file=args.sync_file, auth_har=args.auth_har)
+    client = MarcoPoloClient(sync_file=args.sync_file, token_file=args.token_file)
     result = client.actionables(args.video_id)
     text = json.dumps(result, indent=2, ensure_ascii=False)
     if args.out:
@@ -459,7 +509,7 @@ def print_actionables(args):
 
 
 def search_videos(args):
-    client = MarcoPoloClient(sync_file=args.sync_file, auth_har=args.auth_har)
+    client = MarcoPoloClient(sync_file=args.sync_file, token_file=args.token_file)
     records = client.videos(conversation_id=args.conversation, query=args.query)
     if args.sample:
         records = client.sample_videos(args.limit or len(records), query=args.query, seed=args.seed)
@@ -475,30 +525,56 @@ def search_videos(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="marco-polo",
-        description="Export Marco Polo metadata, transcripts, and videos from captured app API auth.",
+        description="Export Marco Polo metadata, transcripts, and videos through the reverse-engineered app API.",
     )
     sub = parser.add_subparsers(required=True)
 
     p = sub.add_parser("init", help="create ignored private/export directories for a new checkout")
-    p.add_argument("--dir", type=Path, default=PRIVATE_DIR, help="private directory for HARs and sync metadata")
+    p.add_argument("--dir", type=Path, default=PRIVATE_DIR, help="private directory for sync metadata and temporary captures")
     p.add_argument("--force", action="store_true", help="rewrite the private README")
     p.set_defaults(func=init_workspace)
 
-    p = sub.add_parser("doctor", help="check local tools and expected private auth files")
-    p.add_argument("--auth-har", type=Path, default=HAR)
-    p.add_argument("--video-auth-har", type=Path, default=VIDEO_HAR)
+    p = sub.add_parser("doctor", help="check local tools, token file, and sync metadata")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--sync-file", type=Path, default=SYNC)
     p.set_defaults(func=doctor)
 
-    p = sub.add_parser("auth-check", help="verify captured auth headers, optionally against live API calls")
-    p.add_argument("--auth-har", type=Path, default=HAR)
+    auth = sub.add_parser("auth", help="manage Marco Polo API tokens")
+    auth_sub = auth.add_subparsers(required=True)
+
+    p = auth_sub.add_parser("login", help="request and verify a phone login code")
+    p.add_argument("phone")
+    p.add_argument("--code")
+    p.add_argument("--country-code", default=DEFAULT_COUNTRY_CODE)
+    p.add_argument("--delivery", default="sms", choices=["sms", "whatsapp"])
+    p.add_argument("--existing-user-only", action="store_true")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
+    p.set_defaults(func=auth_login)
+
+    p = auth_sub.add_parser("import-har", help="extract auth headers from one captured HAR into the token file")
+    p.add_argument("har", type=Path)
+    p.add_argument("--profile", choices=["sync", "video"], default="sync")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
+    p.set_defaults(func=auth_import_har)
+
+    p = auth_sub.add_parser("check", help="verify saved token headers, optionally against live API calls")
+    p.add_argument("--profile", choices=["sync", "video"], default="sync")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--live", action="store_true", help="call conversations/sync to prove auth is current")
     p.add_argument("--video-id", help="test auth against one video download endpoint")
     p.add_argument("--sync-file", type=Path, default=SYNC)
     p.set_defaults(func=auth_check)
 
-    p = sub.add_parser("sync", help="refresh conversations/sync metadata using captured sync auth")
-    p.add_argument("--auth-har", type=Path, default=HAR)
+    p = sub.add_parser("auth-check", help="deprecated alias for `auth check`")
+    p.add_argument("--profile", choices=["sync", "video"], default="sync")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
+    p.add_argument("--live", action="store_true", help="call conversations/sync to prove auth is current")
+    p.add_argument("--video-id", help="test auth against one video download endpoint")
+    p.add_argument("--sync-file", type=Path, default=SYNC)
+    p.set_defaults(func=auth_check)
+
+    p = sub.add_parser("sync", help="refresh conversations/sync metadata using the saved token")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--out", type=Path, default=SYNC)
     p.set_defaults(func=sync)
 
@@ -513,7 +589,7 @@ def main():
 
     p = sub.add_parser("search-videos", help="search videos by id, conversation title, or transcript text")
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--conversation")
     p.add_argument("--query")
     p.add_argument("--limit", type=int)
@@ -524,7 +600,7 @@ def main():
     p = sub.add_parser("download-raw", help="download the raw /mp4/video response body")
     p.add_argument("video_id")
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=VIDEO_HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=download_raw)
 
@@ -532,7 +608,7 @@ def main():
     p.add_argument("video_id")
     p.add_argument("out", type=Path)
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=VIDEO_HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--raw", type=Path, help="already-downloaded /mp4/video body")
     p.add_argument("--raw-dir", type=Path, help="directory containing cached raw video bodies")
     p.add_argument("--info", type=Path, help="write converter parse info JSON")
@@ -543,7 +619,7 @@ def main():
     p = sub.add_parser("export-batch", help="export multiple videos as standard MP4 files")
     p.add_argument("out_dir", type=Path)
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=VIDEO_HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--conversation")
     p.add_argument("--limit", type=int)
     p.add_argument("--sample", action="store_true", help="shuffle before applying --limit")
@@ -563,7 +639,7 @@ def main():
     p = sub.add_parser("transcript", help="print or save a transcript from sync metadata")
     p.add_argument("video_id")
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--json", action="store_true")
     p.add_argument("--out", type=Path)
     p.set_defaults(func=print_transcript)
@@ -571,7 +647,7 @@ def main():
     p = sub.add_parser("actionables", help="extract simple action items from a transcript")
     p.add_argument("video_id")
     p.add_argument("--sync-file", type=Path, default=SYNC)
-    p.add_argument("--auth-har", type=Path, default=HAR)
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.add_argument("--out", type=Path)
     p.set_defaults(func=print_actionables)
 

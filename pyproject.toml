@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "marco-polo-cli"
 version = "0.1.0"
-description = "Export Marco Polo videos and metadata from captured app API auth."
+description = "Export Marco Polo videos and metadata through the reverse-engineered app API."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Tony Xiao" }]

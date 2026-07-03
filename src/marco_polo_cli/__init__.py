@@ -1,4 +1,4 @@
-"""Tools for exporting Marco Polo videos from captured app API auth."""
+"""Tools for exporting Marco Polo videos through the reverse-engineered app API."""
 
 __all__ = ["__version__"]
 
