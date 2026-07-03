@@ -92,8 +92,8 @@ class CliTests(unittest.TestCase):
     def test_auth_login_verifies_code_and_writes_token_file(self):
         calls = []
 
-        def fake_post_json(url, body):
-            calls.append((url, body))
+        def fake_post_json(url, body, auth=None):
+            calls.append((url, body, auth))
             return {"api_token": "fake-api-token", "video_auth_token": "fake-video-auth"}
 
         old_post_json = cli.post_json
@@ -101,6 +101,12 @@ class CliTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as td:
                 token = Path(td) / ".marco-polo-token"
+                token.write_text(json.dumps({
+                    "version": 1,
+                    "tokens": {
+                        "sync": {"authorization": "Bearer fake-bootstrap-token"},
+                    },
+                }))
                 with redirect_stdout(StringIO()):
                     cli.auth_login(
                         Namespace(
@@ -119,6 +125,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "https://marcopolo.me/api/v4/auth/verify-phone-code")
         self.assertEqual(calls[0][1]["phone"], "5550101234")
         self.assertEqual(calls[0][1]["verification_code"], "123456")
+        self.assertEqual(calls[0][2].authorization, "Bearer fake-bootstrap-token")
         self.assertEqual(data["tokens"]["sync"]["authorization"], "Bearer fake-api-token")
         self.assertEqual(data["tokens"]["video"]["x_auth_token"], "fake-video-auth")
 

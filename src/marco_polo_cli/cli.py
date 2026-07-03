@@ -44,9 +44,11 @@ def request_json(url, token_file=None, profile="sync"):
         return json.load(resp)
 
 
-def post_json(url, body):
+def post_json(url, body, auth=None):
     data = json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="POST")
+    if auth:
+        req.add_header("Authorization", auth.authorization)
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
     req.add_header("User-Agent", "okhttp/5.3.2")
@@ -109,6 +111,12 @@ def auth_import_har(args):
 
 def auth_login(args):
     phone = normalize_phone(args.phone)
+    bootstrap_auth = None
+    if args.token_file.exists():
+        try:
+            bootstrap_auth = load_token_file(args.token_file, "sync")
+        except Exception:
+            bootstrap_auth = None
     if not args.code:
         data = post_json(
             "https://marcopolo.me/api/v4/auth/send-phone-code",
@@ -119,6 +127,7 @@ def auth_login(args):
                 "existing_user_only": args.existing_user_only,
                 "phone": phone,
             },
+            bootstrap_auth,
         )
         code_length = data.get("code_length")
         detail = f" ({code_length} digits)" if code_length else ""
@@ -135,6 +144,7 @@ def auth_login(args):
             "supports_email_verification": True,
             "verification_code": args.code,
         },
+        bootstrap_auth,
     )
     api_token = data.get("api_token")
     if not api_token:
