@@ -9,6 +9,7 @@ Do not commit HAR files or token values.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import subprocess
@@ -20,8 +21,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_SYNC = Path("/tmp/marcopolo-current-sync.json")
-DEFAULT_AUTH_HAR = Path("/tmp/marcopolo-proxyman-api-all-206.har")
+DEFAULT_SYNC = Path(os.environ.get("MARCO_POLO_SYNC_FILE", "private/sync.json"))
+DEFAULT_AUTH_HAR = Path(os.environ.get("MARCO_POLO_AUTH_HAR", "private/sync-auth.har"))
+DEFAULT_VIDEO_AUTH_HAR = Path(os.environ.get("MARCO_POLO_VIDEO_AUTH_HAR", "private/video-auth.har"))
 DEFAULT_CONVERTER = Path(__file__).with_name("svp_to_mp4.py")
 DEFAULT_CONVERTER_MODULE = "marco_polo_cli.svp_to_mp4"
 
@@ -120,13 +122,16 @@ class MarcoPoloClient:
         self,
         sync_file: Path = DEFAULT_SYNC,
         auth_har: Path | None = DEFAULT_AUTH_HAR,
+        video_auth_har: Path | None = DEFAULT_VIDEO_AUTH_HAR,
         converter: Path = DEFAULT_CONVERTER,
     ) -> None:
         self.sync_file = Path(sync_file)
         self.auth_har = Path(auth_har) if auth_har else None
+        self.video_auth_har = Path(video_auth_har) if video_auth_har else None
         self.converter = Path(converter)
         self._sync_data: Any | None = None
         self._auth: AuthHeaders | None = None
+        self._video_auth: AuthHeaders | None = None
 
     @property
     def auth(self) -> AuthHeaders:
@@ -135,6 +140,15 @@ class MarcoPoloClient:
                 raise ValueError("auth_har is required for live API calls")
             self._auth = load_auth_from_har(self.auth_har)
         return self._auth
+
+    @property
+    def video_auth(self) -> AuthHeaders:
+        if self._video_auth is None:
+            if self.video_auth_har and self.video_auth_har.exists():
+                self._video_auth = load_auth_from_har(self.video_auth_har)
+            else:
+                self._video_auth = self.auth
+        return self._video_auth
 
     def sync(self, out: Path | None = None) -> Any:
         data = _request_json("https://marcopolo.me/api/v4/conversations/sync", self.auth)
@@ -234,9 +248,9 @@ class MarcoPoloClient:
         out.parent.mkdir(parents=True, exist_ok=True)
         url = f"https://video-2-redirect.marcopolo.me/api/v4/videos/{record.video_id}/mp4/video"
         req = urllib.request.Request(url)
-        req.add_header("Authorization", self.auth.authorization)
-        if self.auth.x_auth_token:
-            req.add_header("X-Auth-Token", self.auth.x_auth_token)
+        req.add_header("Authorization", self.video_auth.authorization)
+        if self.video_auth.x_auth_token:
+            req.add_header("X-Auth-Token", self.video_auth.x_auth_token)
         req.add_header("X-Read-Token", record.read_token)
         req.add_header("Range", "bytes=0-")
         req.add_header("X-Wait", "true")

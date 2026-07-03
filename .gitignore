@@ -24,3 +24,9 @@ raw/
 sync*.json
 *transcript*.json
 *actionables*.json
+
+# Explicitly allow fake non-secret test fixtures.
+!tests/
+!tests/fixtures/
+!tests/fixtures/*.har
+!tests/fixtures/*.json
