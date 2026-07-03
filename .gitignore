@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+
+# Captures and exports may contain private messages or live auth tokens.
+*.har
+*.proxymanlogv2
+private/
+tmp/
+exports/
+raw/
+*.mp4
+*.mov
+*.m4a
+*.wav
+*.aac
+sync*.json
+*transcript*.json
+*actionables*.json

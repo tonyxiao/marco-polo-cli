@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marco-polo-cli"
+version = "0.1.0"
+description = "Export Marco Polo videos and metadata from captured app API auth."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Tony Xiao" }]
+license = "MIT"
+keywords = ["marco-polo", "video", "export", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+native = ["frida>=16"]
+
+[project.scripts]
+marco-polo = "marco_polo_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
