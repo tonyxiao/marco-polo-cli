@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import json
 import os
 import random
+import secrets
 import shutil
 import subprocess
 import sys
@@ -26,6 +28,9 @@ SYNC = Path(os.environ.get("MARCO_POLO_SYNC_FILE", PRIVATE_DIR / "sync.json"))
 CONVERTER_MODULE = "marco_polo_cli.svp_to_mp4"
 DEFAULT_COUNTRY_CODE = "US"
 DEFAULT_FEATURE_FLAGS = []
+DEFAULT_APP_BUILD = "27407632439"
+DEFAULT_APP_VERSION = "0.579.0"
+DEFAULT_PLATFORM_VERSION = "36"
 
 
 def load_auth(token_file=None, profile="sync"):
@@ -54,6 +59,57 @@ def post_json(url, body, auth=None):
     req.add_header("User-Agent", "okhttp/5.3.2")
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)
+
+
+def random_urlsafe_token(num_bytes):
+    return base64.urlsafe_b64encode(secrets.token_bytes(num_bytes)).decode().rstrip("=")
+
+
+def generated_device_id():
+    return "11." + random_urlsafe_token(16)
+
+
+def anonymous_auth_body():
+    return {
+        "app_build": DEFAULT_APP_BUILD,
+        "app_type": "mp",
+        "app_version": DEFAULT_APP_VERSION,
+        "carrier": "",
+        "device_id": generated_device_id(),
+        "feature_flags": DEFAULT_FEATURE_FLAGS,
+        "flavor": "release",
+        "locale": "en_US",
+        "manufacturer": "Python",
+        "model_name": "marco-polo-cli",
+        "platform_type": "android",
+        "platform_user_token": random_urlsafe_token(6),
+        "platform_version": DEFAULT_PLATFORM_VERSION,
+        "secret": random_urlsafe_token(16),
+        "timezone": os.environ.get("TZ", "America/Los_Angeles"),
+    }
+
+
+def bootstrap_auth_token(token_file):
+    from marco_polo_cli.client import AuthHeaders
+
+    data = post_json("https://marcopolo.me/api/v4/auth", anonymous_auth_body())
+    api_token = data.get("api_token")
+    if not api_token:
+        raise SystemExit("anonymous auth response did not contain api_token")
+    auth = AuthHeaders(f"Bearer {api_token}", data.get("video_auth_token"))
+    save_token_file(token_file, "sync", auth)
+    if auth.x_auth_token:
+        save_token_file(token_file, "video", auth)
+    return auth
+
+
+def get_bootstrap_auth(token_file):
+    if token_file.exists():
+        try:
+            return load_token_file(token_file, "sync")
+        except Exception:
+            pass
+    return bootstrap_auth_token(token_file)
 
 
 def normalize_phone(phone):
@@ -109,14 +165,14 @@ def auth_import_har(args):
     print(f"wrote {args.profile} token to {args.token_file}")
 
 
+def auth_bootstrap(args):
+    bootstrap_auth_token(args.token_file)
+    print(f"wrote anonymous bootstrap token to {args.token_file}")
+
+
 def auth_login(args):
     phone = normalize_phone(args.phone)
-    bootstrap_auth = None
-    if args.token_file.exists():
-        try:
-            bootstrap_auth = load_token_file(args.token_file, "sync")
-        except Exception:
-            bootstrap_auth = None
+    bootstrap_auth = get_bootstrap_auth(args.token_file)
     if not args.code:
         data = post_json(
             "https://marcopolo.me/api/v4/auth/send-phone-code",
@@ -572,6 +628,10 @@ def main():
     p.add_argument("--existing-user-only", action="store_true")
     p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
     p.set_defaults(func=auth_login)
+
+    p = auth_sub.add_parser("bootstrap", help="create an anonymous bootstrap token without requesting a phone code")
+    p.add_argument("--token-file", type=Path, default=TOKEN_FILE)
+    p.set_defaults(func=auth_bootstrap)
 
     p = auth_sub.add_parser("import-har", help="extract auth headers from one captured HAR into the token file")
     p.add_argument("har", type=Path)

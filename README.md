@@ -31,6 +31,16 @@ marco-polo auth login 5550101234 --code 123456
 marco-polo doctor
 ```
 
+The first `auth login` command bootstraps an anonymous app token with
+`POST /api/v4/auth` before requesting the verification code. Proxyman is not
+part of the normal login path.
+
+To test only that first step without sending a verification code:
+
+```bash
+marco-polo auth bootstrap
+```
+
 If login breaks because the private app API changes, use a temporary capture only to import the auth headers once:
 
 ```bash
@@ -133,6 +143,7 @@ The reverse-engineered API contract lives in [docs/openapi.yaml](docs/openapi.ya
 
 Known working endpoints:
 
+- `POST /api/v4/auth`
 - `POST /api/v4/auth/send-phone-code`
 - `POST /api/v4/auth/verify-phone-code`
 - `GET /api/v4/conversations/sync`

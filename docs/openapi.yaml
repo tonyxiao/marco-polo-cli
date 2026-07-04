@@ -14,6 +14,30 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /api/v4/auth:
+    post:
+      operationId: createAnonymousAuthToken
+      summary: Create anonymous device auth token
+      description: >
+        First-run app auth. This endpoint does not require an Authorization
+        header. The app sends generated per-install device values and receives
+        an `api_token`; later login endpoints use that value as
+        `Authorization: Bearer {api_token}` before any phone number is verified.
+      security: []
+      x-reverse-engineering-status: observed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnonymousAuthRequest"
+      responses:
+        "200":
+          description: Anonymous token payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnonymousAuthResponse"
   /api/v4/conversations/sync:
     get:
       operationId: syncConversations
@@ -240,6 +264,79 @@ components:
         - delivery_method
         - existing_user_only
         - phone
+    AnonymousAuthRequest:
+      type: object
+      additionalProperties: true
+      properties:
+        app_build:
+          type: string
+        app_type:
+          type: string
+          examples: ["mp"]
+        app_version:
+          type: string
+        carrier:
+          type: string
+        device_id:
+          type: string
+          description: Generated Marco Polo device xid, observed as `11.` plus URL-safe random data.
+        feature_flags:
+          type: array
+          items:
+            type: string
+        flavor:
+          type: string
+          examples: ["release"]
+        locale:
+          type: string
+          examples: ["en_US"]
+        manufacturer:
+          type: string
+        model_name:
+          type: string
+        platform_type:
+          type: string
+          examples: ["android"]
+        platform_user_token:
+          type: string
+          description: Generated anonymous platform token in CLI usage.
+        platform_version:
+          type: string
+        secret:
+          type: string
+          description: Generated per-install anonymous API secret.
+        timezone:
+          type: string
+      required:
+        - app_build
+        - app_type
+        - app_version
+        - device_id
+        - flavor
+        - locale
+        - platform_type
+        - platform_version
+        - secret
+        - timezone
+    AnonymousAuthResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        api_token:
+          type: string
+          description: Use as `Authorization: Bearer {api_token}` for follow-up login calls.
+        current_time:
+          type: integer
+        device_id:
+          type: string
+        expiration_time:
+          type: integer
+        is_registered:
+          type: boolean
+        user_id:
+          type:
+            - string
+            - "null"
     SendPhoneCodeResponse:
       type: object
       additionalProperties: true

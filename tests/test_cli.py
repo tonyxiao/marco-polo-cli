@@ -129,6 +129,64 @@ class CliTests(unittest.TestCase):
         self.assertEqual(data["tokens"]["sync"]["authorization"], "Bearer fake-api-token")
         self.assertEqual(data["tokens"]["video"]["x_auth_token"], "fake-video-auth")
 
+    def test_auth_login_bootstraps_without_existing_token(self):
+        calls = []
+
+        def fake_post_json(url, body, auth=None):
+            calls.append((url, body, auth))
+            if url.endswith("/api/v4/auth"):
+                return {"api_token": "fake-bootstrap-token"}
+            return {"code_length": 6}
+
+        old_post_json = cli.post_json
+        cli.post_json = fake_post_json
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                token = Path(td) / ".marco-polo-token"
+                with redirect_stdout(StringIO()):
+                    cli.auth_login(
+                        Namespace(
+                            phone="+1 (555) 010-1234",
+                            code=None,
+                            country_code="US",
+                            delivery="sms",
+                            existing_user_only=False,
+                            token_file=token,
+                        )
+                    )
+                data = json.loads(token.read_text())
+        finally:
+            cli.post_json = old_post_json
+
+        self.assertEqual(calls[0][0], "https://marcopolo.me/api/v4/auth")
+        self.assertIsNone(calls[0][2])
+        self.assertIn("device_id", calls[0][1])
+        self.assertIn("secret", calls[0][1])
+        self.assertEqual(calls[1][0], "https://marcopolo.me/api/v4/auth/send-phone-code")
+        self.assertEqual(calls[1][2].authorization, "Bearer fake-bootstrap-token")
+        self.assertEqual(data["tokens"]["sync"]["authorization"], "Bearer fake-bootstrap-token")
+
+    def test_auth_bootstrap_writes_anonymous_token(self):
+        def fake_post_json(url, body, auth=None):
+            self.assertEqual(url, "https://marcopolo.me/api/v4/auth")
+            self.assertIsNone(auth)
+            self.assertIn("device_id", body)
+            self.assertIn("secret", body)
+            return {"api_token": "fake-bootstrap-token"}
+
+        old_post_json = cli.post_json
+        cli.post_json = fake_post_json
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                token = Path(td) / ".marco-polo-token"
+                with redirect_stdout(StringIO()):
+                    cli.auth_bootstrap(Namespace(token_file=token))
+                data = json.loads(token.read_text())
+        finally:
+            cli.post_json = old_post_json
+
+        self.assertEqual(data["tokens"]["sync"]["authorization"], "Bearer fake-bootstrap-token")
+
     def test_search_transcript_and_actionables_from_sync_metadata(self):
         sync = str(FIXTURES / "sync.json")
         search = run_cli("search-videos", "--sync-file", sync, "--query", "pressure")
